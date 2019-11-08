@@ -7,6 +7,7 @@
  *  - w pełni konfigurowalny
  *    parametry siewnika
  *    sekwencje sterowania urzytkownika
+ *    pomiar samego ziarna, pomiar samego nawozu, pomiar ziarna + pomiar nawozu (konfiguracja czujników)
  *  - automatyczne wykrywanie podłączonych czujników poziomu ziarna
  *  - automatyczne wykrywanie połączenia z urządzeniem Android
  *  - automatyczne wykrywanie typu sterownika przez system Android
@@ -33,7 +34,7 @@
  * * dodatkowo transmisja danych, aktualne mapy
  * 
  * Wyjścia sterownika:
- * 3 GPIO x PWM RGB LED
+ * 1 GPIO x RGB LED
  * 1 GPIO x SOUND ALARM
  * 2 GPIO x znaczniki
  * 1 GPIO x ścieżki technologiczne
@@ -100,16 +101,14 @@
 #define TX 13
 
 // Porty do komunikowania stanu zasypu zasobnika ziarna
-#define SET_LED_R 11
-#define SET_LED_G 10
-#define SET_LED_B 9
+#define SET_LED_RGB 11
 
 // Porty do sterowania automatyką siewnika
 #define SET_TECH_PATH 8
-#define SET_L_POINTER 7
-#define SET_R_POINTER 6
-#define GET_L_POINTER 5
-#define GET_R_POINTER 4
+#define SET_L_MARKER 7      // podwoja funkcja - sterowanie z pojedynczym zaworem lub sterowanie tylko L.
+#define SET_R_MARKER 6
+#define GET_L_MARKER 5
+#define GET_R_MARKER 4
 #define GET_ROLLER_RPM 3
 #define GET_SEEDER_RPM 2
 
@@ -158,26 +157,21 @@ void setup()
     pinMode(GET_SEED_8, INPUT_PULLUP);  // nano only
   }
 
-  pinMode(SET_LED_R, OUTPUT);
-  pinMode(SET_LED_G, OUTPUT);
-  pinMode(SET_LED_B, OUTPUT);
-  digitalWrite(SET_LED_R, LOW);
-  digitalWrite(SET_LED_G, LOW);
-  digitalWrite(SET_LED_B, LOW);
+  pinMode(SET_LED_RGB, OUTPUT);
+  digitalWrite(SET_LED_RGB, LOW);
   
-  pinMode(SET_TECH_PATH, OUTPUT);           // 8
-  pinMode(SET_L_POINTER, OUTPUT);           // 7
-  pinMode(SET_R_POINTER, OUTPUT);           // 6
-  pinMode(GET_L_POINTER, INPUT_PULLUP);     // 5
-  pinMode(GET_R_POINTER, INPUT_PULLUP);     // 4
+  pinMode(SET_TECH_PATH, OUTPUT);          // 8
+  pinMode(SET_L_MARKER, OUTPUT);           // 7
+  pinMode(SET_R_MARKER, OUTPUT);           // 6
+  pinMode(GET_L_MARKER, INPUT_PULLUP);     // 5
+  pinMode(GET_R_MARKER, INPUT_PULLUP);     // 4
   digitalWrite(SET_TECH_PATH, LOW);
-  digitalWrite(SET_L_POINTER, LOW);
-  digitalWrite(SET_R_POINTER, LOW);
+  digitalWrite(SET_L_MARKER, LOW);
+  digitalWrite(SET_R_MARKER, LOW);
 
   // obsługa RPM
   pinMode(GET_SEEDER_RPM, INPUT_PULLUP);    // 2
   pinMode(GET_ROLLER_RPM, INPUT_PULLUP);    // 3
-  //attachInterrupt(digitalPinToInterrupt(GET_SEEDER_RPM), read_rpm, FALLING);
   call_interrupt(GET_SEEDER_RPM, read_rpm_seeder);
   call_interrupt(GET_ROLLER_RPM, read_rpm_roller);
   
@@ -190,7 +184,7 @@ bool bt_connection_status = true; // jesli polaczenie bedzie ok, obsluz dodatkow
 void loop()
 {
   // czytaj czujnik nasion
-  Serial.println(meassure_seed_level());
+  //Serial.println(meassure_seed_level());
   // wyswietl status nasion na monitorze LED
   if(bt_connection_status)
   {

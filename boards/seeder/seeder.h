@@ -33,10 +33,8 @@ void read_rpm_roller()
 
 void get_seeder_speed()
 {
-  //detachInterrupt(digitalPinToInterrupt(GET_SEEDER_RPM));
   call_interrupt(GET_SEEDER_RPM);
   unsigned long time_diff = millis() - rpm_seeder_read_window_time_past;
-  //attachInterrupt(digitalPinToInterrupt(GET_SEEDER_RPM), read_rpm, FALLING);
   call_interrupt(GET_SEEDER_RPM, read_rpm_seeder);
   if(time_diff < 3000)
   {
@@ -49,10 +47,8 @@ void get_seeder_speed()
 
 void get_roller_speed()
 {
-  //detachInterrupt(digitalPinToInterrupt(GET_SEEDER_RPM));
   call_interrupt(GET_ROLLER_RPM);
   unsigned long time_diff = millis() - rpm_roller_read_window_time_past;
-  //attachInterrupt(digitalPinToInterrupt(GET_SEEDER_RPM), read_rpm, FALLING);
   call_interrupt(GET_ROLLER_RPM, read_rpm_roller);
   if(time_diff < 3000)
   {
@@ -79,84 +75,246 @@ enum e_command
   set_tpath_off          // odblokuj wysiewanie na sciezkach
 } seeder_command(do_nothing);
 
-void set_seeder_marker_zero()
+/*
+ * marker types:
+ * 1 - dwa siłowniki jednostronnego działania, lub jeden siłownik podwójny, sterowane pojedyńczym zaworem.
+ *     Trójnik przełączający - podawanie ciśnienia składanie. Otwieranie zaworu, sprężyny rozkładają znaczniki.
+ * 2 - dwa siłowniki jednostronnego działania, lub jeden siłownik podwójny, sterowane pojedyńczym zaworem.
+ *     Bezpośrednie podawanie ciśnienia poprzez 2 osobne zawory sterujące.
+ * 3 - siłowniki elektryczne z krańcówkami wbudowanymi. Czasowe rozkładanie. Sterowanie 4 portami.
+ */
+error_code set_seeder_marker_zero(int marker_type = 1)
 {
-  if (!marker_is_busy)                                            // jesli obecnie nie ma zadnej akcji na znacznikach
+  /*
+   * Funkcja do pdnoszenia znaczników.
+   */
+  if (0 == SEEDER_ERROR &&
+      !marker_is_busy)                                          // jesli obecnie nie ma zadnej akcji na znacznikach
   {
-    marker_is_busy_timer = millis();                              // zresetuj licznik zabezpieczenia czasowego dla znaacznikow
+    marker_is_busy_timer = millis();                            // zresetuj licznik zabezpieczenia czasowego dla znacznikow
+    marker_short_run_on_timer = millis();                       // zresetuj licznik zabezpieczenia czasowego dla detekcji l/r znaacznikow
   }
   
-  if (set_marker_zero == seeder_command &&                        // jesli jest komenda
-      (((//digitalRead(GET_R_POINTER)  ||                         // jesli prawy znacznik NIE jest złożony lub
-        digitalRead(GET_L_POINTER)) &&                            // jesli lewy znacznik NIE jest złożony oraz
-      millis() - marker_is_busy_timer < MARKER_BUSY_WINDOW) ||    // jesli licznik zabezpieczenia czasowego nie jest przekroczony lub
-      marker_force_command))                                      // jest wymuszenie komendy
+  if (set_marker_zero == seeder_command &&                      // jesli jest komenda
+      (((digitalRead(GET_R_MARKER)  ||                          // jesli prawy znacznik NIE jest złożony lub
+         digitalRead(GET_L_MARKER)) &&                          // jesli lewy znacznik NIE jest złożony oraz
+      millis() - marker_is_busy_timer < MARKER_BUSY_WINDOW) ||  // jesli licznik zabezpieczenia czasowego nie jest przekroczony lub
+      marker_force_command))                                    // jest wymuszenie komendy
   {
     // włącz składanie znaczników
-    digitalWrite(SET_L_POINTER, HIGH);                           // wyłącz siłownik znacznika
-    digitalWrite(SET_R_POINTER, HIGH);                           // wyłącz siłownik znacznika
-    marker_is_busy = true;                                       // wyzeruj zajętość akcji na znacznikach
+    marker_is_busy = true;                                     // zajętość akcji na znacznikach
+    switch(marker_type)
+    {
+      case 1:
+        if(millis() - marker_short_run_on_timer < MARKER_SHORT_RUN_WINDOW)
+        {
+          digitalWrite(SET_L_MARKER, HIGH);                    // włącz siłownik znacznika na krotka chwile
+          marker_short_run_off_timer = millis();
+        }
+        else
+        {
+          if(millis() - marker_short_run_off_timer < MARKER_SHORT_RUN_WINDOW/2)
+          {
+            digitalWrite(SET_L_MARKER, LOW);                   // wyłącz siłownik znacznika na krotka chwile
+          }
+          else
+          {
+            digitalWrite(SET_L_MARKER, HIGH);                  // włącz siłownik znacznika aż znaczniki zostaną ustawione
+          }
+        }
+        break;
+      case 2:
+        digitalWrite(SET_L_MARKER, HIGH);                      // wyłącz siłownik znacznika
+        digitalWrite(SET_R_MARKER, HIGH);                      // wyłącz siłownik znacznika
+        break;
+      default:
+        break;
+    }
+
     if(DEBUG)
     {
-       Serial.println("set_seeder_marker_zero, ustawianie znacznikow");
+       Serial.println("set_seeder_marker_zero, składanie znacznikow");
     }
   }
   else if(set_marker_zero == seeder_command)
   {
-    // wyłącz składanie znaczników
-    
-    digitalWrite(SET_L_POINTER, LOW);
-    digitalWrite(SET_R_POINTER, LOW);
+    // wyłącz składanie znaczników 
+    digitalWrite(SET_L_MARKER, LOW);
+    digitalWrite(SET_R_MARKER, LOW);
     marker_is_busy = false;
     marker_is_busy_timer = 0;
+    marker_short_run_on_timer = 0;
+    marker_short_run_off_timer = 0;
     seeder_command = do_nothing;
     if(DEBUG)
     {
        Serial.println("set_seeder_marker_zero, koniec");
     }
   }
+  return NONE;
 }
 
-void set_seeder_marker_r()
+error_code set_seeder_marker_right_or_left(uint8_t marker_get, uint8_t marker_set, const e_command seder_command_expected, int marker_type = 1)
 {
-  if (!marker_is_busy)                                            // jesli obecnie nie ma zadnej akcji na znacznikach
+  /*
+   * Funkcja do opuszczania wybranego znacznika - prawy lub lewy.
+   * Poniewaz brakuje krancowek przy rozłożonym znaczniku uzywany jest timer.
+   * Najpierw sprawdzany jest status znacznikow, potem przez pewien czas rozkladany jest znacznik, jesli spełnione są warunki.
+   * Następnie sprawdzne jest czy poprawny znacznik został rozłożony. Jeśli nie, procedura jest powtarzana. 
+   * Jeśli powtórne rozkładanie nie zadziała zwracany jest kod błędu.
+   */ 
+  if (0 == SEEDER_ERROR &&
+      !marker_is_busy &&                                       // jesli obecnie nie ma zadnej akcji na znacznikach
+      !digitalRead(marker_get))                                // jesli wybrany znacznik jest zamkniety            
   {
-    marker_is_busy_timer = millis();                              // zresetuj licznik zabezpieczenia czasowego dla znaacznikow
+    marker_open_timer = millis();                              // zresetuj licznik zabezpieczenia czasowego dla otwierania znaacznikow
   }
   
-  if (set_marker_right == seeder_command &&                       // jesli jest komenda
-      ((!digitalRead(GET_R_POINTER) &&                             // jesli prawy znacznik jest złożony lub
-      millis() - marker_is_busy_timer < MARKER_BUSY_WINDOW) ||    // jesli licznik zabezpieczenia czasowego nie jest przekroczony lub
-      marker_force_command))                                      // jest wymuszenie komendy
+  if (seder_command_expected == seeder_command &&              // jesli jest komenda
+     (millis() - marker_open_timer < MARKER_OPEN_WINDOW ||     // jesli licznik zabezpieczenia czasowego nie jest przekroczony lub
+      marker_force_command))                                   // jest wymuszenie komendy
   {
-    // włącz składanie znaczników
-    digitalWrite(SET_L_POINTER, HIGH);                           // wyłącz siłownik znacznika
-    digitalWrite(SET_R_POINTER, HIGH);                           // wyłącz siłownik znacznika
-    marker_is_busy = true;                                       // wyzeruj zajętość akcji na znacznikach
+    // włącz rozkładanie wybranego znacznika
+    marker_is_busy = true;                                     // zajętość akcji na znacznikach
+    switch(marker_type)
+    {
+      case 1:
+        digitalWrite(SET_L_MARKER, HIGH);                      // wyłącz ogólny siłownik znacznika
+        break;
+      case 2:
+        digitalWrite(marker_set, HIGH);                        // wyłącz siłownik znacznika
+        break;
+      default:
+        break;
+    }
+
     if(DEBUG)
     {
-       Serial.println("set_seeder_marker_r, ustawianie znacznikow");
+       Serial.println("set_seeder_marker_right_or_left, rozkładanie znacznika");
     }
   }
-  else if(set_marker_zero == seeder_command)
+  else if(seder_command_expected == seeder_command)
   {
-    // wyłącz składanie znaczników
-    
-    digitalWrite(SET_L_POINTER, LOW);
-    digitalWrite(SET_R_POINTER, LOW);
+    // wyłącz składanie znaczników 
+    digitalWrite(SET_L_MARKER, LOW);
+    digitalWrite(SET_R_MARKER, LOW);
     marker_is_busy = false;
-    marker_is_busy_timer = 0;
+    marker_open_timer = 0;
+    
+    if(!digitalRead(marker_get))                                // jesli wybrany znacznik nadal jest zamkniety
+    {
+      if(marker_procedure_repetation_counter)
+      {
+        // ERROR
+        if(set_marker_left == seeder_command) SEEDER_ERROR = ERROR_SET_RIGHT_MARKER;
+        if(set_marker_right == seeder_command) SEEDER_ERROR = ERROR_SET_LEFT_MARKER;
+        return SEEDER_ERROR;
+      }
+      marker_procedure_repetation_counter++;
+      set_seeder_marker_right_or_left(marker_get, marker_set, seder_command_expected, marker_type);  // wykonaj procedure rozłożenia wybranego znacznika ponownie
+    }
+    
+    marker_procedure_repetation_counter = 0;
     seeder_command = do_nothing;
+    
     if(DEBUG)
     {
-       Serial.println("set_seeder_marker_r, koniec");
+       Serial.println("set_seeder_marker_right_or_left, koniec");
     }
   }
+  return NONE;
+}
+
+error_code set_seeder_marker_right_and_left(int marker_type = 1)
+{
+  /*
+   * Funkcja do opuszczania prawego i lewego znacznika.
+   */ 
+  if (0 == SEEDER_ERROR &&
+      !marker_is_busy &&                                       // jesli obecnie nie ma zadnej akcji na znacznikach
+      (!digitalRead(GET_L_MARKER) ||
+       !digitalRead(GET_R_MARKER)))                             // jesli choć jeden znacznik jest podniesiony            
+  {
+    marker_open_timer = millis();                              // zresetuj licznik zabezpieczenia czasowego dla otwierania znaacznikow
+    marker_short_run_on_timer = millis();
+  }
+  
+  if (set_marker_left_right == seeder_command &&              // jesli jest komenda
+     (millis() - marker_open_timer < MARKER_OPEN_WINDOW ||     // jesli licznik zabezpieczenia czasowego nie jest przekroczony lub
+      marker_force_command))                                   // jest wymuszenie komendy
+  {
+    // włącz rozkładanie znacznika prawego i lewego
+    marker_is_busy = true;                                     // zajętość akcji na znacznikach
+    switch(marker_type)
+    {
+      case 1:
+        if(millis() - marker_short_run_on_timer < MARKER_SHORT_RUN_WINDOW)
+        {
+          digitalWrite(SET_L_MARKER, HIGH);                    // włącz siłownik znacznika na krotka chwile
+          marker_short_run_off_timer = millis();
+        }
+        else
+        {
+          if(millis() - marker_short_run_off_timer < MARKER_SHORT_RUN_WINDOW/2)
+          {
+            digitalWrite(SET_L_MARKER, LOW);                   // wyłącz siłownik znacznika na krotka chwile
+          }
+          else
+          {
+            digitalWrite(SET_L_MARKER, HIGH);                  // włącz siłownik znacznika aż znaczniki zostaną ustawione
+          }
+        }
+        break;
+      case 2:
+        digitalWrite(SET_L_MARKER, HIGH);                      // wyłącz siłownik znacznika
+        digitalWrite(SET_R_MARKER, HIGH);                      // wyłącz siłownik znacznika
+        break;
+      default:
+        break;
+    }
+
+    if(DEBUG)
+    {
+       Serial.println("set_seeder_marker_right_and_left, rozkładanie znacznikow");
+    }
+  }
+  else if(set_marker_left_right == seeder_command)
+  {
+    // wyłącz składanie znaczników 
+    digitalWrite(SET_L_MARKER, LOW);
+    digitalWrite(SET_R_MARKER, LOW);
+    marker_is_busy = false;
+    marker_open_timer = 0;
+    
+    if(!digitalRead(GET_R_MARKER) ||
+       !digitalRead(GET_L_MARKER))                         // jesli wybrany znacznik nadal jest zamkniety
+    {
+      if(marker_procedure_repetation_counter)
+      {
+        // ERROR
+        SEEDER_ERROR = ERROR_SET_LEFT_RIGHT_MARKER;
+        return SEEDER_ERROR;
+      }
+      marker_procedure_repetation_counter++;
+      set_seeder_marker_right_and_left();           // wykonaj procedure rozłożenia znaczników ponownie
+    }
+    
+    marker_procedure_repetation_counter = 0;
+    seeder_command = do_nothing;
+    
+    if(DEBUG)
+    {
+       Serial.println("set_seeder_marker_right_and_left, koniec");
+    }
+  }
+  return NONE;
 }
 
 void control_seeder()
 {
   set_seeder_marker_zero();
+  set_seeder_marker_right_or_left(GET_R_MARKER, SET_R_MARKER, set_marker_right);
+  set_seeder_marker_right_or_left(GET_L_MARKER, SET_L_MARKER, set_marker_left);
 }
 
 String meassure_seed_level()
